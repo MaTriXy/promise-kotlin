@@ -37,32 +37,39 @@ import java.util.concurrent.atomic.AtomicInteger
  * @param promises sequence of [Promise]`<T, E>` to be executed
  * @return [Promise]`<Array<T>, E>`
  */
-inline fun <reified T, E> Promise.Companion.all(promises: Sequence<Promise<T, E>>): Promise<Array<T>, E> {
+inline fun <reified T, E> Promise.Companion.all(promises: List<Promise<T, E>>): Promise<Array<T>, E> {
   return Promise {
+    if (promises.isEmpty()) {
+      resolve(emptyArray<T>())
+      return@Promise
+    }
+
+
     val subscriber = this
-    val promiseList = promises.toList()
-    val remainingCount = AtomicInteger(promiseList.size)
+
+    val remainingCount = AtomicInteger(promises.size)
     val canceled = AtomicBoolean()
     val cancel = {
       canceled.set(true)
-      promiseList.forEach { it.cancel() }
+      promises.forEach { it.cancel() }
     }
     onCancel(cancel)
 
-    val result = Array<Any?>(promiseList.size, { Unit })
-    promiseList.forEachIndexed { index, promise ->
+    val result = Array<Any>(promises.size) { Unit }
+    promises.forEachIndexed { index, promise ->
       if (canceled.get()) return@forEachIndexed
-
-      promise.whenComplete {
-        when (it) {
-          is Promise.Result.Success -> result[index] = it.value as Any?
-          is Promise.Result.Error -> cancel().apply { subscriber.reject(it.error) }
+      promise.whenComplete(
+        onResolve = {
+          result[index] = it as Any
+          if (remainingCount.decrementAndGet() == 0 && !canceled.get()) {
+            subscriber.resolve(Array(result.size) { result[it] as T })
+          }
+        },
+        onReject = {
+          cancel()
+          subscriber.reject(it)
         }
-
-        if (remainingCount.decrementAndGet() == 0 && !canceled.get()) {
-          subscriber.resolve(result.map { it as T }.toTypedArray())
-        }
-      }
+      )
     }
   }
 }
@@ -77,7 +84,7 @@ inline fun <reified T, E> Promise.Companion.all(promises: Sequence<Promise<T, E>
  * @return [Promise]`<Array<T>, E>`
  */
 inline fun <reified T, E> Promise.Companion.all(vararg promises: Promise<T, E>): Promise<Array<T>, E> {
-  return all(promises.asSequence())
+  return all(promises.asList())
 }
 
 /**
@@ -92,10 +99,10 @@ inline fun <reified T, E> Promise.Companion.all(vararg promises: Promise<T, E>):
  * @see Tuple
  */
 @Suppress("UNCHECKED_CAST", "NAME_SHADOWING")
-fun <T1 : Any?, T2 : Any?, E> Promise.Companion.all(p1: Promise<T1, E>, p2: Promise<T2, E>): Promise<Tuple<T1, T2>, E> {
+fun <T1 : Any?, T2 : Any?, E> Promise.Companion.all(p1: Promise<out T1, out E>, p2: Promise<out T2, out E>): Promise<Tuple<T1, T2>, out E> {
   val p1 = p1.map { it as Any? }
   val p2 = p2.map { it as Any? }
-  return all<Any?, E>(p1, p2).map {
+  return all(p1, p2).map {
     Tuple(it[0] as T1, it[1] as T2)
   }
 }
@@ -117,7 +124,7 @@ fun <T1 : Any?, T2 : Any?, T3 : Any?, E> Promise.Companion.all(p1: Promise<T1, E
   val p1 = p1.map { it as Any? }
   val p2 = p2.map { it as Any? }
   val p3 = p3.map { it as Any? }
-  return all<Any?, E>(p1, p2, p3).map {
+  return all(p1, p2, p3).map {
     Tuple3(it[0] as T1, it[1] as T2, it[2] as T3)
   }
 }
@@ -141,7 +148,7 @@ fun <T1 : Any?, T2 : Any?, T3 : Any?, T4 : Any?, E> Promise.Companion.all(p1: Pr
   val p2 = p2.map { it as Any? }
   val p3 = p3.map { it as Any? }
   val p4 = p4.map { it as Any? }
-  return all<Any?, E>(p1, p2, p3, p4).map {
+  return all(p1, p2, p3, p4).map {
     Tuple4(it[0] as T1, it[1] as T2, it[2] as T3, it[3] as T4)
   }
 }
@@ -154,7 +161,7 @@ fun <T1 : Any?, T2 : Any?, T3 : Any?, T4 : Any?, E> Promise.Companion.all(p1: Pr
  * @param promises sequence of [Promise]`<T, E>` to be resolved
  * @return [Promise]`<T, E>`
  */
-inline fun <reified T, E> Promise.Companion.any(promises: Sequence<Promise<T, E>>): Promise<T, E> {
+inline fun <reified T, E> Promise.Companion.any(promises: List<Promise<T, E>>): Promise<T, E> {
   return Promise {
     val subscriber = this
     val promiseList = promises.toList()
@@ -168,15 +175,10 @@ inline fun <reified T, E> Promise.Companion.any(promises: Sequence<Promise<T, E>
     promiseList.forEach {
       if (canceled.get()) return@forEach
       it.whenComplete {
+        cancel()
         when (it) {
-          is Promise.Result.Success -> {
-            cancel()
-            subscriber.resolve(it.value)
-          }
-          is Promise.Result.Error -> {
-            cancel()
-            subscriber.reject(it.error)
-          }
+          is Promise.Result.Success -> subscriber.resolve(it.value)
+          is Promise.Result.Error -> subscriber.reject(it.error)
         }
       }
     }
@@ -192,5 +194,5 @@ inline fun <reified T, E> Promise.Companion.any(promises: Sequence<Promise<T, E>
  * @return [Promise]`<T, E>`
  */
 inline fun <reified T, E> Promise.Companion.any(vararg promises: Promise<T, E>): Promise<T, E> {
-  return any(promises.asSequence())
+  return any(promises.asList())
 }
